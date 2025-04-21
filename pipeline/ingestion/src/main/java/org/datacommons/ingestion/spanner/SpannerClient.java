@@ -81,6 +81,60 @@ public class SpannerClient implements Serializable {
         .collect(toList());
   }
 
+  public int filterAndAddMutations(
+      List<Mutation> mutations, Set<String> nodeIds, Map<String, List<Mutation>> mutationMap) {
+    int addedMutationCount = 0;
+    // Map<String, List<Mutation>> mutationMap = new HashMap<>();
+    // Set<String> nodeIds = new HashSet<>();
+
+    for (Mutation mutation : mutations) {
+      String subjectId = mutation.asMap().get("subject_id").getString();
+
+      // Skip duplicate node mutations for the same subject_id
+      if (mutation.getTable().equals(nodeTableName) && nodeIds.contains(subjectId)) {
+        continue;
+      }
+
+      nodeIds.add(subjectId);
+      mutationMap.computeIfAbsent(subjectId, k -> new ArrayList<>()).add(mutation);
+      addedMutationCount++;
+    }
+    return addedMutationCount;
+  }
+
+  public List<Mutation> filterMutations(List<Mutation> mutations, Set<String> nodeIds) {
+    // Map<String, List<Mutation>> mutationMap = new HashMap<>();
+    // Set<String> nodeIds = new HashSet<>();
+    var result = new ArrayList<Mutation>();
+    for (Mutation mutation : mutations) {
+      String subjectId = mutation.asMap().get("subject_id").getString();
+
+      // Skip duplicate node mutations for the same subject_id
+      if (mutation.getTable().equals(nodeTableName) && nodeIds.contains(subjectId)) {
+        continue;
+      }
+
+      nodeIds.add(subjectId);
+      result.add(mutation);
+    }
+    return result;
+  }
+
+
+  public List<MutationGroup> toMutationGroups(Map<String, List<Mutation>> mutationMap) {
+    List<MutationGroup> mutationGroups = new ArrayList<>();
+    for (List<Mutation> mutationList : mutationMap.values()) {
+      if (mutationList.size() == 1) {
+        mutationGroups.add(MutationGroup.create(mutationList.get(0)));
+      } else {
+        Mutation first = mutationList.get(0);
+        List<Mutation> rest = mutationList.subList(1, mutationList.size());
+        mutationGroups.add(MutationGroup.create(first, rest));
+      }
+    }
+    return mutationGroups;
+  }
+
   public List<MutationGroup> toGraphMutationGroups(List<Mutation> mutations) {
     Map<String, List<Mutation>> mutationMap = new HashMap<>();
     Set<String> nodeIds = new HashSet<>();
