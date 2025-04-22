@@ -69,6 +69,58 @@ public class Transforms {
     }
   }
 
+  public static class ObsTimeSeriesRowToMutationDoFn extends DoFn<String, Mutation> {
+    private final CacheReader cacheReader;
+    private final SpannerClient spannerClient;
+
+    public ObsTimeSeriesRowToMutationDoFn(CacheReader cacheReader, SpannerClient spannerClient) {
+      this.cacheReader = cacheReader;
+      this.spannerClient = spannerClient;
+    }
+
+    @ProcessElement
+    public void processElement(@Element String row, OutputReceiver<Mutation> c) {
+      if (CacheReader.isObsTimeSeriesCacheRow(row)) {
+        List<Observation> observations = cacheReader.parseTimeSeriesRow(row);
+        List<Mutation> mutations =
+            observations.stream().map(spannerClient::toObservationMutation).toList();
+        mutations.forEach(c::output);
+      }
+    }
+  }
+
+  public static class ObsTimeSeriesRowToMutationKVDoFn extends DoFn<String, KV<String, Mutation>> {
+    private final CacheReader cacheReader;
+    private final SpannerClient spannerClient;
+
+    public ObsTimeSeriesRowToMutationKVDoFn(CacheReader cacheReader, SpannerClient spannerClient) {
+      this.cacheReader = cacheReader;
+      this.spannerClient = spannerClient;
+    }
+
+    @ProcessElement
+    public void processElement(@Element String row, OutputReceiver<KV<String, Mutation>> c) {
+      if (CacheReader.isObsTimeSeriesCacheRow(row)) {
+        List<Observation> observations = cacheReader.parseTimeSeriesRow(row);
+        List<Mutation> mutations =
+            observations.stream().map(spannerClient::toObservationMutation).toList();
+        mutations.stream().map(this::toKV).forEach(c::output);
+      }
+    }
+
+    private KV<String, Mutation> toKV(Mutation mutation) {
+      // Map<String, List<Mutation>> mutationMap = new HashMap<>();
+      // Set<String> nodeIds = new HashSet<>();
+      var mutationMap = mutation.asMap();
+      String variableMeasured = mutationMap.get("variable_measured").getString();
+      String observationAbout = mutationMap.get("observation_about").getString();
+      var provenance = mutationMap.get("provenance").getString();
+      var observationPeriod = mutationMap.get("observation_period").getString();
+
+      return KV.of(variableMeasured + "::" + observationAbout, mutation);
+    }
+  }
+
   public static class LazyArcRowToMutationGroupDoFn extends DoFn<String, MutationGroup> {
     private final CacheReader cacheReader;
     private final SpannerClient spannerClient;
