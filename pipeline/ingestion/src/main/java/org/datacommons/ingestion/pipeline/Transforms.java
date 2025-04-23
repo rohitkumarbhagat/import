@@ -1,6 +1,7 @@
 package org.datacommons.ingestion.pipeline;
 
 import com.google.cloud.spanner.Mutation;
+import com.google.common.collect.Sets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -205,17 +206,22 @@ public class Transforms {
   public static class ArcRowToMutationKVDoFn extends DoFn<String, KV<String, Mutation>> {
     private final CacheReader cacheReader;
     private final SpannerClient spannerClient;
-    private Set<String> nodeIds;
+    private Set<String> nodeIds = null;
 
     public ArcRowToMutationKVDoFn(CacheReader cacheReader, SpannerClient spannerClient) {
       this.cacheReader = cacheReader;
       this.spannerClient = spannerClient;
-      this.nodeIds = new HashSet<>();
     }
 
     @DoFn.FinishBundle
     public synchronized void FinishBundle(FinishBundleContext c) throws Exception {
-      // clear map and count
+      // Clear older nodeIds, in case same object is being reused for other bundle.
+      this.nodeIds = null;
+    }
+
+    @DoFn.StartBundle
+    public synchronized void StartBundle(StartBundleContext c) throws Exception {
+      this.nodeIds = Sets.newConcurrentHashSet();
     }
 
     @ProcessElement
@@ -235,7 +241,10 @@ public class Transforms {
       // Set<String> nodeIds = new HashSet<>();
 
       String subjectId = mutation.asMap().get("subject_id").getString();
-      return KV.of(subjectId, mutation);
+      // Use first 15 chars as key
+      var key = subjectId.substring(0, Math.min(subjectId.length(), 15));
+      // var key = subjectId;
+      return KV.of(key, mutation);
     }
   }
 }

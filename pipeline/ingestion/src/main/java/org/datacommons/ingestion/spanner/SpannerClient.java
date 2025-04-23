@@ -138,16 +138,19 @@ public class SpannerClient implements Serializable {
       String subjectId = mutation.asMap().get("subject_id").getString();
 
       // Skip duplicate node mutations for the same subject_id
-      if (mutation.getTable().equals(nodeTableName) && nodeIds.contains(subjectId)) {
-        continue;
+      if (mutation.getTable().equals(nodeTableName)) {
+        if (nodeIds.contains(subjectId)) {
+          continue;
+        }
+        // Add only for Nodes mutation.
+        nodeIds.add(subjectId);
       }
 
-      nodeIds.add(subjectId);
+      // nodeIds.add(subjectId);
       result.add(mutation);
     }
     return result;
   }
-
 
   public List<MutationGroup> toMutationGroups(Map<String, List<Mutation>> mutationMap) {
     List<MutationGroup> mutationGroups = new ArrayList<>();
