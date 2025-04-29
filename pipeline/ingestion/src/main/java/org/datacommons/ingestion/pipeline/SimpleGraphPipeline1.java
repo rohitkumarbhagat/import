@@ -4,6 +4,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.common.collect.Sets;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.spanner.MutationGroup;
@@ -16,6 +17,7 @@ import org.apache.beam.sdk.transforms.ParDo.SingleOutput;
 import org.apache.beam.sdk.transforms.Partition;
 import org.apache.beam.sdk.transforms.Partition.PartitionFn;
 import org.apache.beam.sdk.transforms.Redistribute;
+import org.apache.beam.sdk.transforms.Sample;
 import org.apache.beam.sdk.transforms.WithTimestamps;
 import org.apache.beam.sdk.transforms.windowing.AfterPane;
 import org.apache.beam.sdk.transforms.windowing.AfterProcessingTime;
@@ -77,11 +79,11 @@ public class SimpleGraphPipeline1 {
     // writeNodesDedupedAfterPartition(entries, cacheReader, spannerClient);
     // ---- Ignore ----------
 
-
     // Use one of the following pipelines
 
     // 1. Redistribute and write nodes+edges together
-    writeMutationsWithRedistribution(entries, cacheReader, spannerClient);
+    // writeMutationsWithRedistribution(entries, cacheReader, spannerClient);
+    writeMutationsWithRedistributionAndSampling(entries, cacheReader, spannerClient);
 
     // 2. Redistribute nodes only. Partition edges. Write them separately
     // writeNodeRedistributedEdgesPartitioned(entries, cacheReader, spannerClient);
@@ -110,6 +112,24 @@ public class SimpleGraphPipeline1 {
     PCollection<KV<String, Mutation>> mutations =
         entries.apply(
             "CreateMutations", ParDo.of(new ArcRowToMutationKVDoFn(cacheReader, spannerClient)));
+    mutations
+        .apply("redistribute", Redistribute.byKey())
+        .apply("ExtractMutations", ParDo.of(new ExtractMutationDoFn(spannerClient)))
+        .apply("WriteToSpanner", spannerClient.getWriteTransform());
+  }
+
+  private static void writeMutationsWithRedistributionAndSampling(
+      PCollection<String> entries, CacheReader cacheReader, SpannerClient spannerClient) {
+    PCollection<KV<String, Mutation>> mutations =
+        entries.apply(
+            "CreateMutations", ParDo.of(new ArcRowToMutationKVDoFn(cacheReader, spannerClient)));
+    // sampling any() uses GBK
+    // generate
+    mutations
+        //
+        .apply("sample mutations", ParDo.of(new SampleMutationDoFn(1000)))
+        // .apply("Extract sample Mutations", ParDo.of(new ExtractMutationDoFn(spannerClient)))
+        .apply("Write sample ToSpanner", spannerClient.getWriteTransform());
     mutations
         .apply("redistribute", Redistribute.byKey())
         .apply("ExtractMutations", ParDo.of(new ExtractMutationDoFn(spannerClient)))
@@ -224,12 +244,10 @@ public class SimpleGraphPipeline1 {
     // separate edges and nodes mutations
     PCollection<KV<String, Mutation>> nodeMutations =
         mutations.apply(
-            "FilterNodeMutations",
-            filterMutationsForTable(spannerClient.getNodeTableName()));
+            "FilterNodeMutations", filterMutationsForTable(spannerClient.getNodeTableName()));
     PCollection<KV<String, Mutation>> edgeMutations =
         mutations.apply(
-            "FilterEdgeMutations",
-            filterMutationsForTable(spannerClient.getEdgeTableName()));
+            "FilterEdgeMutations", filterMutationsForTable(spannerClient.getEdgeTableName()));
 
     // redistribute and write nodes
     nodeMutations
@@ -274,14 +292,14 @@ public class SimpleGraphPipeline1 {
 
     // separate edges and nodes mutations
     PCollection<KV<String, Mutation>> nodeMutations =
-        mutations.apply(
-            "FilterNodeMutations",
-                filterMutationsForTable(spannerClient.getNodeTableName()))
-            .apply("redistribute arbitarily node mutations",Redistribute.arbitrarily()); // to avoid fusion
+        mutations
+            .apply("FilterNodeMutations", filterMutationsForTable(spannerClient.getNodeTableName()))
+            .apply(
+                "redistribute arbitarily node mutations",
+                Redistribute.arbitrarily()); // to avoid fusion
     PCollection<KV<String, Mutation>> edgeMutations =
         mutations.apply(
-            "FilterEdgeMutations",
-            filterMutationsForTable(spannerClient.getEdgeTableName()));
+            "FilterEdgeMutations", filterMutationsForTable(spannerClient.getEdgeTableName()));
 
     // Process Node partitions
     PCollectionList<KV<String, Mutation>> nodePartitions =
@@ -359,6 +377,34 @@ public class SimpleGraphPipeline1 {
       }
       c.output(mutation);
       // nodeIds.add(subjectId);
+    }
+  }
+
+  static class SampleMutationDoFn extends DoFn<KV<String, Mutation>, Mutation> {
+    private final AtomicInteger count = new AtomicInteger(0);
+    private final int sample_limit;
+
+    public SampleMutationDoFn(int sample_limit) {
+      this.sample_limit = sample_limit;
+    }
+
+    @DoFn.FinishBundle
+    public synchronized void FinishBundle(FinishBundleContext c) throws Exception {
+      // Clear older nodeIds, in case same object is being reused for other bundle.
+      this.count.set(0);
+    }
+
+    @DoFn.StartBundle
+    public synchronized void StartBundle(StartBundleContext c) throws Exception {
+      this.count.set(0);
+    }
+
+    @ProcessElement
+    public void processElement(@Element KV<String, Mutation> kv, OutputReceiver<Mutation> c) {
+      var mutation = kv.getValue();
+      if(count.getAndIncrement()< sample_limit){
+        c.output(mutation);
+      }
     }
   }
 }

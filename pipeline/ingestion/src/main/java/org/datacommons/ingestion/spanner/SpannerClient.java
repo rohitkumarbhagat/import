@@ -43,7 +43,8 @@ public class SpannerClient implements Serializable {
     return SpannerIO.write()
         .withProjectId(gcpProjectId)
         .withInstanceId(spannerInstanceId)
-        .withDatabaseId(spannerDatabaseId);
+        .withDatabaseId(spannerDatabaseId)
+        .withMaxCommitDelay(20);
   }
 
   public WriteGrouped getWriteGroupedTransform() {

@@ -54,12 +54,12 @@ public class SimpleObservationsPipeline1 {
             options.getProjectId(), options.getStorageBucketId(), options.getImportGroup());
 
     PCollection<String> entries = pipeline.apply("ReadFromCache", TextIO.read().from(cachePath));
-    // PCollection<Mutation> mutationGroups =
-    //     entries.apply(
-    //         "CreateMutations",
-    //         ParDo.of(new ObsTimeSeriesRowToMutationDoFn(cacheReader, spannerClient)));
-    // mutationGroups.apply("WriteToSpanner", spannerClient.getWriteTransform());
-    writeMutationWithRedistribution(entries, cacheReader, spannerClient);
+    PCollection<Mutation> mutations =
+        entries.apply(
+            "CreateMutations",
+            ParDo.of(new ObsTimeSeriesRowToMutationDoFn(cacheReader, spannerClient)));
+    mutations.apply("WriteToSpanner", spannerClient.getWriteTransform());
+    // writeMutationWithRedistribution(entries, cacheReader, spannerClient);
     pipeline.run();
   }
 
