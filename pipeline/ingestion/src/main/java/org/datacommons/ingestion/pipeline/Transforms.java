@@ -1,6 +1,7 @@
 package org.datacommons.ingestion.pipeline;
 
 import com.google.cloud.spanner.Mutation;
+import com.google.common.base.Joiner;
 import com.google.common.collect.Sets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -118,7 +119,9 @@ public class Transforms {
       var provenance = mutationMap.get("provenance").getString();
       var observationPeriod = mutationMap.get("observation_period").getString();
 
-      return KV.of(variableMeasured + "::" + observationAbout, mutation);
+      return KV.of(
+          Joiner.on("::").join(variableMeasured, observationAbout, provenance, observationPeriod),
+          mutation);
     }
   }
 

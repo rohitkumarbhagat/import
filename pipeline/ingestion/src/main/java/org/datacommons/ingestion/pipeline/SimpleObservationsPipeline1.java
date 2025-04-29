@@ -9,6 +9,8 @@ import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.spanner.MutationGroup;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.FlatMapElements;
+import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.Redistribute;
 import org.apache.beam.sdk.values.KV;
@@ -59,28 +61,29 @@ public class SimpleObservationsPipeline1 {
             "CreateMutations",
             ParDo.of(new ObsTimeSeriesRowToMutationDoFn(cacheReader, spannerClient)));
     mutations.apply("WriteToSpanner", spannerClient.getWriteTransform());
-    // writeMutationWithRedistribution(entries, cacheReader, spannerClient);
+    // writeMutationWithGBK(entries, cacheReader, spannerClient);
     pipeline.run();
   }
 
-  private static void writeMutationWithRedistribution(
+  private static void writeMutationWithGBK(
       PCollection<String> entries, CacheReader cacheReader, SpannerClient spannerClient) {
     PCollection<KV<String, Mutation>> mutations =
         entries.apply(
             "CreateMutations",
             ParDo.of(new ObsTimeSeriesRowToMutationKVDoFn(cacheReader, spannerClient)));
     mutations
-        .apply("redistribute", Redistribute.byKey())
+        .apply("GBK", GroupByKey.create())
         .apply(
             "ExtractMutations",
             ParDo.of(
-                new DoFn<KV<String, Mutation>, Mutation>() {
+                new DoFn<KV<String, Iterable<Mutation>>, Mutation>() {
 
                   @ProcessElement
                   public void processElement(
-                      @Element KV<String, Mutation> kv, OutputReceiver<Mutation> c) {
-                    var mutation = kv.getValue();
-                    c.output(mutation);
+                      @Element KV<String, Iterable<Mutation>> kv, OutputReceiver<Mutation> c) {
+                    for (Mutation mutation : kv.getValue()) {
+                      c.output(mutation);
+                    }
                   }
                 }))
         .apply("WriteToSpanner", spannerClient.getWriteTransform());
