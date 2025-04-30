@@ -120,7 +120,12 @@ public class Transforms {
       var observationPeriod = mutationMap.get("observation_period").getString();
 
       return KV.of(
-          Joiner.on("::").join(variableMeasured, observationAbout, provenance, observationPeriod),
+          // Joiner.on("::").join(variableMeasured, observationAbout, provenance, observationPeriod),
+          Joiner.on("::").join(variableMeasured, observationAbout.substring(0, Math.min(observationAbout.length(), 15))),
+          // Joiner.on("::").join(variableMeasured, observationAbout),
+          // Joiner.on("::").join(variableMeasured, observationAbout, provenance, observationPeriod),
+          // Joiner.on("::").join(
+          //     variableMeasured, observationAbout, provenance, observationPeriod),variableMeasured,
           mutation);
     }
   }

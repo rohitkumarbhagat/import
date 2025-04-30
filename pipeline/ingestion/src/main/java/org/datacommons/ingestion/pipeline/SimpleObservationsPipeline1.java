@@ -1,9 +1,12 @@
 package org.datacommons.ingestion.pipeline;
 
 import com.google.cloud.spanner.Mutation;
+import com.google.common.base.Joiner;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.StreamSupport;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.spanner.MutationGroup;
@@ -56,13 +59,18 @@ public class SimpleObservationsPipeline1 {
             options.getProjectId(), options.getStorageBucketId(), options.getImportGroup());
 
     PCollection<String> entries = pipeline.apply("ReadFromCache", TextIO.read().from(cachePath));
+    // writeMutations(entries, cacheReader, spannerClient);
+    writeMutationWithGBK(entries, cacheReader, spannerClient);
+    pipeline.run();
+  }
+
+  private static void writeMutations(
+      PCollection<String> entries, CacheReader cacheReader, SpannerClient spannerClient) {
     PCollection<Mutation> mutations =
         entries.apply(
             "CreateMutations",
             ParDo.of(new ObsTimeSeriesRowToMutationDoFn(cacheReader, spannerClient)));
     mutations.apply("WriteToSpanner", spannerClient.getWriteTransform());
-    // writeMutationWithGBK(entries, cacheReader, spannerClient);
-    pipeline.run();
   }
 
   private static void writeMutationWithGBK(
@@ -81,11 +89,48 @@ public class SimpleObservationsPipeline1 {
                   @ProcessElement
                   public void processElement(
                       @Element KV<String, Iterable<Mutation>> kv, OutputReceiver<Mutation> c) {
-                    for (Mutation mutation : kv.getValue()) {
-                      c.output(mutation);
+
+                    var duplicateCount = 0;
+                    // sort the values by key
+                    var sortedMutations =
+                        StreamSupport.stream(kv.getValue().spliterator(), false)
+                            .sorted(Comparator.comparing(SimpleObservationsPipeline1::getKey))
+                            .toList();
+                    var set = new HashSet<>();
+                    for (Mutation mutation : sortedMutations) {
+                      if (set.add(getKey(mutation))) {
+                        c.output(mutation);
+                      } else {
+                        duplicateCount++;
+                      }
+                    }
+                    if (duplicateCount > 0) {
+                      LOGGER.info(
+                          "Key=[{}]:duplicate mutations count=[{}]", kv.getKey(), duplicateCount);
                     }
                   }
                 }))
         .apply("WriteToSpanner", spannerClient.getWriteTransform());
+  }
+
+  private static String getKey(Mutation m) {
+    var mutationMap = m.asMap();
+    String variableMeasured = mutationMap.get("variable_measured").getString();
+    String observationAbout = mutationMap.get("observation_about").getString();
+    var provenance = mutationMap.get("provenance").getString();
+    var observationPeriod = mutationMap.get("observation_period").getString();
+    var measurementMethod = mutationMap.get("measurement_method").getString();
+    var unit = mutationMap.get("unit").getString();
+    var scalingFactor = mutationMap.get("scaling_factor").getString();
+
+    return Joiner.on("::")
+        .join(
+            variableMeasured,
+            observationAbout,
+            provenance,
+            observationPeriod,
+            measurementMethod,
+            unit,
+            scalingFactor);
   }
 }

@@ -20,6 +20,7 @@ import org.apache.beam.sdk.io.gcp.spanner.SpannerIO.WriteGrouped;
 import org.datacommons.ingestion.data.Edge;
 import org.datacommons.ingestion.data.Node;
 import org.datacommons.ingestion.data.Observation;
+import org.joda.time.Duration;
 
 public class SpannerClient implements Serializable {
 
@@ -43,8 +44,13 @@ public class SpannerClient implements Serializable {
     return SpannerIO.write()
         .withProjectId(gcpProjectId)
         .withInstanceId(spannerInstanceId)
-        .withDatabaseId(spannerDatabaseId);
-        // .withMaxCommitDelay(20);
+        .withDatabaseId(spannerDatabaseId)
+        .withMaxCommitDelay(20)
+        .withBatchSizeBytes(3*1024*1024) // for observations with bigger rows
+        .withMaxNumMutations(10000) // for nodes/edges with few columns
+        .withMaxNumRows(3000) // for nodes/edges with few columns
+        .withGroupingFactor(100)
+        .withCommitDeadline(Duration.standardSeconds(120)); //commit delay increases latency
   }
 
   public WriteGrouped getWriteGroupedTransform() {
