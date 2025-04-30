@@ -41,7 +41,8 @@ public class IngestionPipeline {
             .nodeTableName(options.getSpannerNodeTableName())
             .edgeTableName(options.getSpannerEdgeTableName())
             .observationTableName(options.getSpannerObservationTableName())
-            .numShards(options.getNumShards())
+            // .numShards(options.getNumShards())
+            .numShards(1)
             .build();
 
     buildIngestionPipeline(pipeline, importGroupVersions, cacheReader, spannerClient);

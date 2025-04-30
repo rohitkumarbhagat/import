@@ -19,6 +19,7 @@ import org.apache.beam.sdk.values.KV;
 import org.datacommons.ingestion.data.Edge;
 import org.datacommons.ingestion.data.Node;
 import org.datacommons.ingestion.data.Observation;
+import org.joda.time.Duration;
 
 public class SpannerClient implements Serializable {
 
@@ -45,7 +46,12 @@ public class SpannerClient implements Serializable {
         .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
         .withProjectId(gcpProjectId)
         .withInstanceId(spannerInstanceId)
-        .withDatabaseId(spannerDatabaseId);
+        .withDatabaseId(spannerDatabaseId)
+        .withMaxCommitDelay(20)
+        .withBatchSizeBytes(3 * 1024 * 1024)
+        .withMaxNumMutations(10000)
+        .withGroupingFactor(100)
+        .withCommitDeadline(Duration.standardSeconds(120));
   }
 
   public WriteGrouped getWriteGroupedTransform() {
@@ -251,9 +257,15 @@ public class SpannerClient implements Serializable {
   public String getObservationKVKey(Mutation mutation) {
     var variableMeasured = getMutationValue(mutation, "variable_measured");
     var observationAbout = getMutationValue(mutation, "observation_about");
-    int shard = Objects.hash(mutation.asMap().get("observations")) % numShards;
+    // int shard = Objects.hash(mutation.asMap().get("observations")) % numShards;
 
-    return Joiner.on("-").join(variableMeasured, observationAbout, shard);
+    // return Joiner.on("-").join(variableMeasured, observationAbout, shard);
+    // Prefix of place is used in key so that more observations for a statvar land on single worker.
+    // This increases chance of having more nearby rows in same mutation batch.
+    return Joiner.on("-")
+        .join(
+            variableMeasured,
+            observationAbout.substring(0, Math.min(observationAbout.length(), 15)));
   }
 
   public String getGcpProjectId() {
