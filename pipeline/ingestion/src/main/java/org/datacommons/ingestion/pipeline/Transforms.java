@@ -5,10 +5,13 @@ import static org.datacommons.ingestion.pipeline.SkipProcessing.SKIP_OBS;
 
 import com.google.cloud.spanner.Mutation;
 import com.google.common.base.Joiner;
+import com.google.common.collect.Sets;
+import com.google.common.collect.Sets;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.StreamSupport;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
@@ -307,18 +310,23 @@ public class Transforms {
 
   static class ExtractObsMutationsDoFn extends DoFn<KV<String, Iterable<Mutation>>, Mutation> {
     // private final SpannerClient spannerClient;
+    private final Set<String> seenObs = new HashSet<>();
+    private final AtomicInteger counter = new AtomicInteger();
 
     public ExtractObsMutationsDoFn() {}
 
-    // @StartBundle
-    // public void startBundle() {
-    //   this.seenNodes.clear();
-    // }
-    //
-    // @FinishBundle
-    // public void finishBundle() {
-    //   this.seenNodes.clear();
-    // }
+    @StartBundle
+    public void startBundle(StartBundleContext context) {
+      this.seenObs.clear();
+      this.counter.set(0);
+    }
+
+    @FinishBundle
+    public void finishBundle() {
+      LOGGER.info("Finish bundle: Total obs ={}, Unique ={}", counter.get(), seenObs.size());
+      this.seenObs.clear();
+      this.counter.set(0);
+    }
 
     @ProcessElement
     public void processElement(
@@ -329,9 +337,10 @@ public class Transforms {
           StreamSupport.stream(kvs.getValue().spliterator(), false)
               .sorted(Comparator.comparing(this::getKey))
               .toList();
-      var set = new HashSet<>();
+      counter.addAndGet(sortedMutations.size());
+      // var set = new HashSet<>();
       for (Mutation mutation : sortedMutations) {
-        if (set.add(getKey(mutation))) {
+        if (seenObs.add(getKey(mutation))) {
           out.output(mutation);
         } else {
           duplicateCount++;

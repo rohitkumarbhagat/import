@@ -48,10 +48,11 @@ public class SpannerClient implements Serializable {
         .withInstanceId(spannerInstanceId)
         .withDatabaseId(spannerDatabaseId)
         .withMaxCommitDelay(20)
-        .withBatchSizeBytes(3 * 1024 * 1024)
-        .withMaxNumMutations(10000)
-        .withGroupingFactor(100)
-        .withCommitDeadline(Duration.standardSeconds(120));
+        .withBatchSizeBytes(3 * 1024 * 1024) // for observations with bigger rows
+        .withMaxNumMutations(10000) // for nodes/edges with few columns
+        .withMaxNumRows(3000) // for nodes/edges with few columns
+        .withGroupingFactor(100) // increasing batch size, hence reducing total groups
+        .withCommitDeadline(Duration.standardSeconds(120)); // commit delay increases latency
   }
 
   public WriteGrouped getWriteGroupedTransform() {
