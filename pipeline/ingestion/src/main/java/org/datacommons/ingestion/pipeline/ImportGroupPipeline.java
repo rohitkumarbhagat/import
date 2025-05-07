@@ -31,7 +31,8 @@ public class ImportGroupPipeline {
             .observationTableName(options.getSpannerObservationTableName())
             .build();
 
-    buildImportGroupPipeline(pipeline, options.getImportGroupVersion(), cacheReader, spannerClient);
+    buildImportGroupPipeline(
+        pipeline, null, options.getImportGroupVersion(), cacheReader, spannerClient);
 
     pipeline.run();
   }

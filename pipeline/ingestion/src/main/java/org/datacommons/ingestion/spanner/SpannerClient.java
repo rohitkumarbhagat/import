@@ -15,6 +15,7 @@ import org.apache.beam.sdk.io.gcp.spanner.SpannerConfig;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerIO;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerIO.Write;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerIO.WriteGrouped;
+import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.values.KV;
 import org.datacommons.ingestion.data.Edge;
 import org.datacommons.ingestion.data.Node;
@@ -41,18 +42,48 @@ public class SpannerClient implements Serializable {
     this.numShards = builder.numShards;
   }
 
-  public Write getWriteTransform() {
+  public Write getWriteTransformForIpcc() {
     return SpannerIO.write()
-        .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
+        // .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
         .withProjectId(gcpProjectId)
         .withInstanceId(spannerInstanceId)
         .withDatabaseId(spannerDatabaseId)
-        .withMaxCommitDelay(20)
-        .withBatchSizeBytes(3 * 1024 * 1024) // for observations with bigger rows
-        .withMaxNumMutations(10000) // for nodes/edges with few columns
-        .withMaxNumRows(3000) // for nodes/edges with few columns
-        .withGroupingFactor(100) // increasing batch size, hence reducing total groups
-        .withCommitDeadline(Duration.standardSeconds(120)); // commit delay increases latency
+        // .withMaxCommitDelay(20)
+        .withBatchSizeBytes(500 * 1024) // for observations with bigger rows
+        // .withMaxNumMutations(10000) // for nodes/edges with few columns
+        // .withMaxNumRows(3000) // for nodes/edges with few columns
+        .withGroupingFactor(1000) // increasing batch size, hence reducing total groups
+        .withCommitDeadline(Duration.standardSeconds(180)); // commit delay increases latency
+  }
+
+  public Write getWriteTransform() {
+    return SpannerIO.write()
+        // .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
+        .withProjectId(gcpProjectId)
+        .withInstanceId(spannerInstanceId)
+        .withDatabaseId(spannerDatabaseId)
+        // .withMaxCommitDelay(20)
+        // .withBatchSizeBytes( 500 * 1024) // for observations with bigger rows
+        // .withMaxNumMutations(10000) // for nodes/edges with few columns
+        // .withMaxNumRows(3000) // for nodes/edges with few columns
+        // .withGroupingFactor(1000) // increasing batch size, hence reducing total groups
+        .withCommitDeadline(Duration.standardSeconds(180)); // commit delay increases latency
+  }
+
+  public Write getWriteTransformForGraph() {
+    return SpannerIO.write()
+        // .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
+        .withProjectId(gcpProjectId)
+        .withInstanceId(spannerInstanceId)
+        .withDatabaseId(spannerDatabaseId)
+        .withMaxNumRows(250) // to reduce splits
+        .withGroupingFactor(2000) // decreased batch size, hence increasing total groups
+        // .withMaxCommitDelay(20)
+        // .withBatchSizeBytes( 500 * 1024) // for observations with bigger rows
+        // .withMaxNumMutations(10000) // for nodes/edges with few columns
+        // .withMaxNumRows(3000) // for nodes/edges with few columns
+        // .withGroupingFactor(1000) // increasing batch size, hence reducing total groups
+        .withCommitDeadline(Duration.standardSeconds(180)); // commit delay increases latency
   }
 
   public WriteGrouped getWriteGroupedTransform() {
@@ -87,14 +118,24 @@ public class SpannerClient implements Serializable {
         .build();
   }
 
+  public static String getEdgeKey(Mutation mutation) {
+    return Joiner.on("::")
+        .join(
+            getMutationValue(mutation, "subject_id"),
+            getMutationValue(mutation, "predicate"),
+            getMutationValue(mutation, "object_id"),
+            getMutationValue(mutation, "object_hash"),
+            getMutationValue(mutation, "provenance"));
+  }
+
   public Mutation toObservationMutation(Observation observation) {
     return Mutation.newInsertOrUpdateBuilder(observationTableName)
         .set("variable_measured")
         .to(observation.getVariableMeasured())
         .set("observation_about")
         .to(observation.getObservationAbout())
-        .set("provenance")
-        .to(observation.getProvenance())
+        // .set("provenance")
+        // .to(observation.getProvenance())
         .set("observation_period")
         .to(observation.getObservationPeriod())
         .set("measurement_method")
@@ -145,7 +186,11 @@ public class SpannerClient implements Serializable {
   }
 
   public List<KV<String, Mutation>> filterGraphKVMutations(
-      List<KV<String, Mutation>> kvs, Set<String> seenNodes) {
+      List<KV<String, Mutation>> kvs,
+      Set<String> seenNodes,
+      Set<String> seenEdges,
+      Counter seenNodesCounter,
+      Counter seenEdgesCounter) {
     var filtered = new ArrayList<KV<String, Mutation>>();
     for (var kv : kvs) {
       var mutation = kv.getValue();
@@ -153,9 +198,25 @@ public class SpannerClient implements Serializable {
       if (mutation.getTable().equals(nodeTableName)) {
         String subjectId = getSubjectId(mutation);
         if (seenNodes.contains(subjectId)) {
+          if (seenNodesCounter != null) {
+            seenNodesCounter.inc();
+          }
           continue;
         }
         seenNodes.add(subjectId);
+      }
+
+      // Skip duplicate edge mutations for the same subject_id, predicate, object_id, object_hash,
+      // and provenance
+      if (seenEdges != null && mutation.getTable().equals(edgeTableName)) {
+        String edgeKey = getEdgeKey(mutation);
+        if (seenEdges.contains(edgeKey)) {
+          if (seenEdgesCounter != null) {
+            seenEdgesCounter.inc();
+          }
+          continue;
+        }
+        seenEdges.add(edgeKey);
       }
 
       filtered.add(kv);
@@ -244,15 +305,18 @@ public class SpannerClient implements Serializable {
 
   public String getGraphKVKey(Mutation mutation) {
     String subjectId = getSubjectId(mutation);
-    if (numShards <= 1 || !mutation.getTable().equals(edgeTableName)) {
-      return subjectId;
-    }
-
-    String objectId = getMutationValue(mutation, "object_id");
-    String objectHash = getMutationValue(mutation, "object_hash");
-    int shard = Objects.hash(objectId, objectHash) % numShards;
-
-    return subjectId + "-" + shard;
+    // if (numShards <= 1 || !mutation.getTable().equals(edgeTableName)) {
+    //   return subjectId.substring(0, Math.min(subjectId.length(), 8));
+    // }
+    //
+    // String objectId = getMutationValue(mutation, "object_id");
+    // String objectHash = getMutationValue(mutation, "object_hash");
+    // int shard = Objects.hash(objectId, objectHash) % numShards;
+    //
+    // return subjectId + "-" + shard;
+    return subjectId.substring(0, Math.min(subjectId.length(), 20));
+    // for biomedical, size = 10 leads to hotkeys of > 1 TiB
+    // return subjectId;
   }
 
   public String getObservationKVKey(Mutation mutation) {
