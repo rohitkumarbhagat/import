@@ -14,6 +14,7 @@ import org.apache.beam.sdk.io.gcp.spanner.SpannerConfig;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerIO;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerIO.Write;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerIO.WriteGrouped;
+import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.values.KV;
 import org.datacommons.ingestion.data.Edge;
 import org.datacommons.ingestion.data.Node;
@@ -42,15 +43,20 @@ public class SpannerClient implements Serializable {
 
   public Write getWriteTransform() {
     return SpannerIO.write()
-        .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
+        // .withSpannerConfig(SpannerConfig.create().withRpcPriority(RpcPriority.HIGH))
         .withProjectId(gcpProjectId)
         .withInstanceId(spannerInstanceId)
         .withDatabaseId(spannerDatabaseId)
-        .withMaxCommitDelay(50)
-        .withBatchSizeBytes(3 * 1024 * 1024)
+        // .withMaxCommitDelay(50)
+        // .withBatchSizeBytes(3 * 1024 * 1024)
+        // .withMaxNumMutations(10000)
+        // .withGroupingFactor(100)
+        .withBatchSizeBytes(500 * 1024) // for observations
+        .withMaxNumRows(
+            2000) // 250 - for graph to avoid multi splits per batch, 1000 for better throughput
+        .withGroupingFactor(3000) // increase batch size
         .withMaxNumMutations(10000)
-        .withGroupingFactor(100)
-        .withCommitDeadline(Duration.standardSeconds(120));
+        .withCommitDeadline(Duration.standardSeconds(180));
   }
 
   public WriteGrouped getWriteGroupedTransform() {
@@ -138,7 +144,11 @@ public class SpannerClient implements Serializable {
   }
 
   public List<KV<String, Mutation>> filterGraphKVMutations(
-      List<KV<String, Mutation>> kvs, Set<String> seenNodes) {
+      List<KV<String, Mutation>> kvs,
+      Set<String> seenNodes,
+      Set<String> seenEdges,
+      Counter duplicateNodesCounter,
+      Counter duplicateEdgesCounter) {
     var filtered = new ArrayList<KV<String, Mutation>>();
     for (var kv : kvs) {
       var mutation = kv.getValue();
@@ -146,14 +156,39 @@ public class SpannerClient implements Serializable {
       if (mutation.getTable().equals(nodeTableName)) {
         String subjectId = getSubjectId(mutation);
         if (seenNodes.contains(subjectId)) {
+          if (duplicateNodesCounter != null) {
+            duplicateNodesCounter.inc();
+          }
           continue;
         }
         seenNodes.add(subjectId);
+      }
+      // Skip duplicate edge mutations for the same subject_id, predicate, object_id, object_hash,
+      // and provenance
+      if (seenEdges != null && mutation.getTable().equals(edgeTableName)) {
+        String edgeKey = getEdgeKey(mutation);
+        if (seenEdges.contains(edgeKey)) {
+          if (duplicateEdgesCounter != null) {
+            duplicateEdgesCounter.inc();
+          }
+          continue;
+        }
+        seenEdges.add(edgeKey);
       }
 
       filtered.add(kv);
     }
     return filtered;
+  }
+
+  public static String getEdgeKey(Mutation mutation) {
+    return Joiner.on("::")
+        .join(
+            getMutationValue(mutation, "subject_id"),
+            getMutationValue(mutation, "predicate"),
+            getMutationValue(mutation, "object_id"),
+            getMutationValue(mutation, "object_hash"),
+            getMutationValue(mutation, "provenance"));
   }
 
   public static String getSubjectId(Mutation mutation) {
@@ -167,13 +202,11 @@ public class SpannerClient implements Serializable {
   /**
    * Returns a string mutation value from a mutation map.
    *
-   * Prefer using this method when multiple mutation values are to be fetched from a given mutation.
-   * Call mutation.asMap() on the mutation and then call this method by passing the map.
+   * <p>Prefer using this method when multiple mutation values are to be fetched from a given
+   * mutation. Call mutation.asMap() on the mutation and then call this method by passing the map.
    * This is more efficient since asMap() iterates over the columns and creates a new map each time.
    *
-   * Example usage:
-   *
-   * <code>
+   * <p>Example usage: <code>
    *     Mutation mutation = ...;
    *     var mutationMap = mutation.asMap();
    *     var value1 = getMutationValue(mutationMap, "column1");
@@ -190,6 +223,7 @@ public class SpannerClient implements Serializable {
     var mutationMap = mutation.asMap();
     String subjectId = getMutationValue(mutationMap, "subject_id");
     if (numShards <= 1 || !mutation.getTable().equals(edgeTableName)) {
+      // return subjectId.substring(0, Math.min(15, subjectId.length()));
       return subjectId;
     }
 
