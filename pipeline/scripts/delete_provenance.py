@@ -16,9 +16,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Delete a provenance's observations before its time series using sequential PDML.
+r"""Delete Observation and TimeSeries rows for one provenance in Spanner.
 
-Requires exclusive facet ownership and no concurrent writers to the target data.
+By default, the script previews deletes without changing data. Add
+--execute to delete rows. Use --sv DCID to select a statvar, and repeat
+--sv to select more than one.
+
+Example preview from the import repository root:
+
+    uv run pipeline/scripts/delete_provenance.py \
+        --project datcom-store \
+        --instance dc-graph-staging \
+        --database dc_graph \
+        --provenance dc/base/EPACriteriaAirPollutants
+
+Requires Python 3.11 or later and Application Default Credentials.
+For deletion, each selected (variable_measured, facet_id) pair must belong
+only to the specified provenance. The script does not check ownership.
+Other jobs must not write these rows while deletion runs.
+
+See pipeline/scripts/README.md for the procedure, failure recovery, and tests.
 """
 
 import argparse
@@ -33,7 +50,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 def delete_provenance(database, provenance, stat_vars=None, execute=False):
-    """Discover existing facets and preview or execute child-first deletion."""
+    """Preview Observation and TimeSeries deletes for a provenance.
+
+    Set execute=True to delete rows. If stat_vars is empty or None, include
+    all statvars for the provenance.
+    """
     predicate = "provenance = @provenance"
     params = {"provenance": provenance}
     types = {"provenance": param_types.STRING}
@@ -81,7 +102,8 @@ def delete_provenance(database, provenance, stat_vars=None, execute=False):
             )
         )
 
-    # Keep all parents until every child delete succeeds, including on reruns.
+    # Delete TimeSeries last to avoid cascading over remaining Observation rows.
+    # A rerun also needs TimeSeries rows to discover the facets again.
     deletes.append(
         ("TimeSeries", f"DELETE FROM TimeSeries WHERE {predicate}", params, types)
     )
@@ -119,7 +141,9 @@ def delete_provenance(database, provenance, stat_vars=None, execute=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--project", required=True)
     parser.add_argument("--instance", required=True)
     parser.add_argument("--database", required=True)

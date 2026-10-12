@@ -14,11 +14,38 @@
 
 """Checks deletion scope, preview behavior, and child-before-parent ordering."""
 
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import create_autospec
 
 from delete_provenance import delete_provenance
 from google.cloud.spanner_v1.database import Database
+
+
+class DeleteProvenanceCliTest(unittest.TestCase):
+    def test_help_displays_usage_without_required_arguments(self):
+        script = Path(__file__).with_name("delete_provenance.py")
+        result = subprocess.run(
+            [sys.executable, "-B", str(script), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+        for option in (
+            "--project",
+            "--instance",
+            "--database",
+            "--provenance",
+            "--sv",
+            "--execute",
+        ):
+            with self.subTest(option=option):
+                self.assertIn(option, result.stdout)
 
 
 class DeleteProvenanceTest(unittest.TestCase):
@@ -35,6 +62,10 @@ class DeleteProvenanceTest(unittest.TestCase):
             delete_provenance(self._database, "dc/base/example")
         self._database.execute_partitioned_dml.assert_not_called()
         self.assertIn("TimeSeriesByProvenance", self._read.call_args.args[0])
+        self.assertIn(
+            "WHERE provenance = @provenance",
+            " ".join(self._read.call_args.args[0].split()),
+        )
         self.assertEqual(
             self._read.call_args.kwargs["params"], {"provenance": "dc/base/example"}
         )
@@ -80,7 +111,8 @@ class DeleteProvenanceTest(unittest.TestCase):
         expected_params = {"provenance": "dc/base/example", "stat_vars": ["sv/b"]}
         self.assertEqual(self._read.call_args.kwargs["params"], expected_params)
         self.assertIn(
-            "variable_measured IN UNNEST(@stat_vars)", self._read.call_args.args[0]
+            "WHERE provenance = @provenance AND variable_measured IN UNNEST(@stat_vars)",
+            " ".join(self._read.call_args.args[0].split()),
         )
         self.assertEqual(calls[0].kwargs["params"]["variable"], "sv/b")
         self.assertIn("variable_measured IN UNNEST(@stat_vars)", calls[-1].args[0])

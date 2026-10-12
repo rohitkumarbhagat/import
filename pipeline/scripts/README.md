@@ -84,31 +84,35 @@ Updates the global Spanner ingestion lock (`IngestionLock`) through the `ingesti
 ## `delete_provenance.py`
 
 Use `delete_provenance.py` to delete Observation and TimeSeries rows for one
-provenance in Spanner. You can delete all statvars for that provenance or select
-specific statvars with `--sv`.
+provenance in Spanner. It leaves Edge, Node, and other tables unchanged.
+You can delete all statvars for that provenance or select specific statvars
+with `--sv`.
 
-The script deletes Observation rows first, one statvar at a time, using
-Partitioned DML. After all Observation deletes succeed, it deletes the matching
-TimeSeries rows with one Partitioned DML statement.
+The script deletes Observation rows before TimeSeries rows and preserves
+change-stream settings so CDC can still record the deletes.
 
-Before deletion, the script reads unique statvar and facet pairs from
-`TimeSeriesByProvenance` in a read-only snapshot. It does not fetch each
-TimeSeries or Observation key or count observations. This query can still scan
-many index entries.
+### Before you start
 
 Use Python 3.11 or later and Application Default Credentials for the target
 database. `uv run` installs `google-cloud-spanner` for the script. You can also
 run the script with Python if that package is already installed.
 
-Each selected `(variable_measured, facet_id)` pair must belong only to the
-target provenance. The script assumes this is true and does not check it.
-Stop other jobs that could write this data, including ingestion and rollback,
-while the script runs. The script does not acquire a lock.
+Run the commands below from the `import` repository root. To see all options:
+
+```bash
+uv run pipeline/scripts/delete_provenance.py --help
+```
 
 ### Preview the deletes
 
-Run this command from the `import` repository root. It reads Spanner but does
-not delete data:
+Replace the example project, instance, database, and provenance with your
+values. Use the exact provenance stored in Spanner, including `dc/base/`
+if present.
+
+Without `--sv`, the script selects all statvars for the provenance. To select
+one statvar, add `--sv STATVAR_DCID`. Repeat `--sv` to select more than one.
+
+Run the preview. It reads Spanner but does not delete data:
 
 ```bash
 uv run pipeline/scripts/delete_provenance.py \
@@ -118,27 +122,32 @@ uv run pipeline/scripts/delete_provenance.py \
 	--provenance dc/base/EPACriteriaAirPollutants
 ```
 
-Add `--sv STATVAR_DCID` to select one statvar. Repeat `--sv` to select more than
-one. Without `--sv`, the script selects all statvars for the provenance. Use the
-exact provenance value stored in Spanner, including `dc/base/` if present.
+The logs list the selected statvars and planned delete statements. The
+preview does not count Observation rows.
 
 ### Check the scope and delete
 
-Check the target database, provenance, and selected statvars in the preview
-logs. To delete that data, run the same command with `--execute`.
+Before you execute the deletes:
 
-Preview mode lists the planned deletes. With `--execute`, the logs also report
-each statement's duration and how many rows it deleted, expressed as
-"at least N rows". Partitioned DML does not return an exact row count.
-Reads and deletes run at low priority. The script uses the Python client's
-default timeout and retries for Partitioned DML.
+1. Check the target database, provenance, and selected statvars in the preview
+   logs.
+2. Confirm that each selected `(variable_measured, facet_id)` pair belongs
+   only to the target provenance. The script does not check ownership.
+3. Stop ingestion, rollback, and other jobs that could write these rows.
+   Keep those jobs stopped until deletion finishes, including during recovery
+   after a failure. The script does not acquire a lock.
+4. Run the same command with `--execute` to delete the selected rows.
+
+Check the logs for TimeSeries completion, or a message that no matching rows
+were found. Each completed statement reports its duration and a deleted-row
+count of "at least N rows". Partitioned DML does not return an exact row count.
+
+### Recover from a failure
 
 If a statement fails, the script stops with an error. It does not undo deletes
-that have already committed. Run the same command again to finish the deletion.
+that have already committed. Resolve the error, then rerun the same command
+with the same provenance and statvar selection to finish deletion.
 The script keeps TimeSeries rows until all Observation deletes succeed.
-
-The script leaves Edge, Node, and other tables unchanged. It keeps change-stream
-settings unchanged so CDC can still record Observation and TimeSeries deletes.
 
 ### Run the tests
 
